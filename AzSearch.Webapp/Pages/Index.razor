@@ -1,0 +1,162 @@
+﻿@page "/"
+@using AzSearch.App.Data;
+@using AzSearch.App.Services;
+@using AzSearch.Shared;
+@using PDFtoImage;
+@using SkiaSharp;
+@inject BlobStorageService  _blobStorage
+@inject DocumentoRepo _docRepo;
+@inject SearchService _searchService;
+
+<PageTitle>Index</PageTitle>
+
+<FluentStack Orientation="Orientation.Vertical">
+    <FluentTextField @bind-Value=argomento Disabled=@disableForm>Argomento</FluentTextField>
+    <FluentTextField @bind-Value=titolo Disabled=@disableForm>titolo</FluentTextField>
+    <FluentDatePicker @bind-Value="@dataCreazione" />
+    File:<InputFile OnChange="@SingleUpload" />
+
+    <FluentButton Id="BtnUpload" @onclick=Upload Disabled=@disableForm>Elabora</FluentButton>
+</FluentStack>
+
+
+
+
+<FluentDataGrid Items="@allDocs" Pagination="@pagination">
+    <PropertyColumn Property="@(p => p.Guid)" Sortable="true" />
+    <PropertyColumn Property="@(p => p.Titolo)" Sortable="true" />
+    <PropertyColumn Property="@(p => p.Argomento)" Sortable="true" />
+    <PropertyColumn Property="@(p => p.DataCreazione)" Sortable="true" />
+    <TemplateColumn>
+        <FluentButton @onclick="@(() => Delete(context))">
+            Delete
+        </FluentButton>
+    </TemplateColumn>
+    <TemplateColumn>
+        <FluentButton @onclick="@(() => Push(context.Id))">
+            Imposta come modificato
+        </FluentButton>
+    </TemplateColumn>
+</FluentDataGrid>
+<FluentPaginator State="@pagination" />
+
+@code {
+
+
+    public string argomento;
+
+    public string titolo;
+
+    public bool pushIndex;
+
+    public DateTime? dataCreazione;
+
+    public BinaryData content;
+    public BinaryData thumbnail;
+
+    private bool disableForm = false;
+
+    PaginationState pagination = new PaginationState { ItemsPerPage = 10 };
+
+    IQueryable<Documento>? allDocs;
+
+    protected override async Task OnInitializedAsync()
+    {
+        allDocs = (await _docRepo.GetAllAsync()).AsQueryable();
+        dataCreazione = DateTime.Now;
+    }
+
+    private async Task SingleUpload(InputFileChangeEventArgs e)
+    {
+        disableForm = true;
+
+        MemoryStream ms = new MemoryStream();
+        await e.File.OpenReadStream(maxAllowedSize: 10240000).CopyToAsync(ms);
+        var bytes = ms.ToArray();
+
+        content = new BinaryData(bytes);
+
+        var img = PDFtoImage.Conversion.ToImage(Convert.ToBase64String(content), height: 400, withAspectRatio: true);
+
+        using (MemoryStream memStream = new MemoryStream())
+        using (SKManagedWStream wstream = new SKManagedWStream(memStream))
+        {
+            img.Encode(wstream, SKEncodedImageFormat.Png, 50);
+            thumbnail = new (memStream.ToArray());
+        } 
+
+        disableForm = false;
+    }
+
+    private async Task Delete (Documento doc)
+    {
+        await _searchService.PushDeleteDocument(doc);
+        
+        await _blobStorage.Delete(doc);
+
+        await _docRepo.DeleteAsync(doc.Id);
+
+        allDocs = (await _docRepo.GetAllAsync()).AsQueryable();
+    }
+
+    public async Task Upload()
+    {
+        disableForm = true;
+
+        string accountName = _blobStorage.GetAccountName();
+
+        // salva a db
+        var doc = new Documento()
+        {
+            Titolo = titolo,
+            Argomento = argomento,
+            DataCreazione = dataCreazione ?? DateTimeOffset.Now
+        };
+
+        Guid g = Guid.NewGuid();
+        doc.Guid = g.ToString();
+
+        doc.Link = $"https://{accountName}.blob.core.windows.net/%CONTAINER%/{g.ToString()}";
+        doc.ThumbnailLink = $"https://{accountName}.blob.core.windows.net/imgs/{g.ToString()}.png";
+
+        doc = await _docRepo.AddAsync(doc);
+
+        await Task.WhenAll(StartPushIndex(doc), StartPullIndex(doc), UploadThumbnail(doc));
+
+        allDocs = (await _docRepo.GetAllAsync()).AsQueryable();
+
+        disableForm = false;
+    }
+
+    private async Task Push(int id)
+    {
+        var doc = await _docRepo.GetByIdAsync(id);
+
+        if (doc != default)
+        {
+            await _blobStorage.EnqueuePush(doc);
+            await _blobStorage.MarkAsEdited(doc);
+        }
+    }
+
+    private async Task StartPushIndex(Documento doc)
+    {
+        // se push: faccio upload, metto in coda per l'ocr
+        // l'api si preoccuperà di fare il resto
+        await _blobStorage.UploadPush(doc.Guid, content);
+
+        await _blobStorage.EnqueuePush(doc);
+    }
+
+    private async Task StartPullIndex(Documento doc)
+    {
+        // se pull: faccio l'upload e aspetto che il job giri
+        await _blobStorage.UploadPull(doc.Guid, content);
+    }
+
+    private async Task UploadThumbnail(Documento doc)
+    {
+        // upload immagine
+        await _blobStorage.UploadThumbnail($"{doc.Guid}.png", thumbnail);
+    }
+}

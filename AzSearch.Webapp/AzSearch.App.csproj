@@ -1,0 +1,27 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+	<PropertyGroup>
+		<TargetFrameworks>net6.0;net7.0</TargetFrameworks>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<IsPackable>true</IsPackable>
+	</PropertyGroup>
+
+	
+
+	<ItemGroup>
+		<PackageReference Include="Azure.Storage.Blobs" Version="12.17.0" />
+		<PackageReference Include="Azure.Storage.Queues" Version="12.15.0" />
+		<PackageReference Include="Dapper" Version="2.0.151" />
+		<PackageReference Include="Microsoft.Data.SqlClient" Version="5.1.1" />
+		<PackageReference Include="Microsoft.Fast.Components.FluentUI" Version="3.0.1" />
+		<PackageReference Include="Microsoft.Fast.Components.FluentUI.Icons" Version="3.0.1" />
+		<PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+		<PackageReference Include="PDFtoImage" Version="2.4.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <ProjectReference Include="..\AzSearch.Shared\AzSearch.Shared.csproj" />
+	</ItemGroup>
+
+</Project>

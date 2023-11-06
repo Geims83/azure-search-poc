@@ -1,0 +1,305 @@
+﻿@page "/search"
+@using AzSearch.App.Data;
+@using AzSearch.App.Services;
+@using AzSearch.Shared;
+@using Azure.Search.Documents;
+@using Azure.Search.Documents.Models;
+@using System.Text;
+@inject BlobStorageService  _blobStorage
+@inject DocumentoRepo _docRepo;
+@inject SearchService _search;
+
+<PageTitle>Search</PageTitle>
+
+<div>
+<FluentStack Orientation="Orientation.Vertical">
+    <FluentSearch @ref=srcArgomento
+    @bind-Value="@argomento"
+                  AfterBindValue=GetArgomento
+                  Placeholder="Argomento" />
+    <br />
+    <FluentListbox aria-label="search results" Items=@argomentoOptions TOption="string"
+                   SelectedOptionChanged="@(e => argomento = (e != defaultResultsText ? e : string.Empty) )" />
+
+    <FluentTextField @bind-Value=titolo>Titolo</FluentTextField>
+    <FluentTextField @bind-Value=testo>Testo</FluentTextField>
+    <FluentStack>
+    <FluentCheckbox @bind-Value=sortByDate>Ordinamento per data</FluentCheckbox>
+            <FluentSwitch Disabled=@(!sortByDate) CheckedMessage="ASC" UncheckedMessage="DESC" @bind-Value="sortASC"></FluentSwitch>
+        </FluentStack>
+    <FluentNumberField @bind-Value=pagina>Pagina</FluentNumberField>
+    <FluentNumberField @bind-Value=numeroElementi>Numero Elementi</FluentNumberField>
+
+    <FluentButton @onclick=SearchAsync>Ricerca</FluentButton>
+</FluentStack>
+</div>
+<br />
+<br />
+<FluentDivider></FluentDivider>
+<br />
+<br />
+<div>
+    Indice Pull:
+<FluentStack Orientation="Orientation.Horizontal">
+    @if (pullResults is not null)
+    {
+        @foreach (var item in pullResults)
+        {
+                <FluentCard>
+                    <img src="@item.thumbnail_link" alt="@item.titolo" />
+                    <b>@item.titolo</b>
+                    <i>@item.data_creazione.Value.ToString("dd/MM/yyyy")</i>
+                    @if (item.Hilights is not null)
+                    {
+                        <p>
+                            @foreach (var linea in item.Hilights)
+                            {
+                                @((MarkupString)$"[...]{linea}[...]")<br />
+                            }
+                        </p>
+
+                    }
+                    else
+                    {
+                        <p>@item.content.Substring(0, 150)...</p>
+                    }
+                </FluentCard>
+        }
+    }
+</FluentStack>
+Facets:
+<FluentStack>
+    <ul>
+     @if (pullFacets is not null)
+        @foreach (var facet in pullFacets)
+        {
+            <ul>@facet.MainKey
+                @foreach (var item in facet.Facets)
+                {
+                    <li>@item.Key - @item.Value</li>
+                }
+            </ul>
+        }
+    </ul> 
+</FluentStack>
+<br />
+    </div>
+<FluentDivider></FluentDivider>
+<br />
+    <div>
+    Indice Push:
+<FluentStack Orientation="Orientation.Horizontal">
+    @if (pushResults is not null)
+    {
+        @foreach (var item in pushResults)
+        {
+            <FluentCard>
+                <img src="@item.thumbnail_link" alt="@item.titolo" />
+                <b>@item.titolo</b>
+                <i>@item.data_creazione.Value.ToString("dd/MM/yyyy")</i>
+                @if (item.Hilights is not null)
+                    {
+                        <p>
+                        @foreach (var linea in item.Hilights)
+                        {
+                            @((MarkupString)$"[...]{linea}[...]")<br/>
+                        }
+                        </p>
+                            
+                    }
+                else
+                {
+                    <p>@item.content.Substring(0, 150)...</p>
+                }
+            </FluentCard>
+        }
+    }
+</FluentStack>
+Facets:
+<FluentStack>
+    <ul>
+        @if (pushFacets is not null)
+            @foreach (var facet in pushFacets)
+            {
+                <ul>
+                    @facet.MainKey
+                    @foreach (var item in facet.Facets)
+                    {
+                        <li>@item.Key - @item.Value</li>
+                    }
+                </ul>
+            }
+    </ul>
+</FluentStack>
+    </div>
+
+
+@code {
+
+    FluentSearch? srcArgomento;
+    static string defaultResultsText = "Nessun argomento trovato";
+    public string argomento;
+
+    public string titolo;
+
+    public string testo;
+
+    public bool sortByDate = false;
+    public bool sortASC = true;
+
+
+    public List<ResultDoc> pullResults;
+    public List<ResultDoc> pushResults;
+
+    List<ResultFacets> pullFacets;
+    List<ResultFacets> pushFacets;
+
+    List<string> argomentoOptions;
+
+    int pagina;
+    int numeroElementi;
+
+    protected override async Task OnInitializedAsync()
+    {
+        argomentoOptions = new();
+        pagina = 1;
+        numeroElementi = 5;
+    }
+
+    public async Task SearchAsync()
+    {
+        if (pagina < 1)
+            pagina = 1;
+
+        if (numeroElementi < 1)
+            numeroElementi = 5;
+
+        int internalPage = pagina - 1;
+
+        var tPull = _search.SearchPull(testo, titolo, argomento, sortByDate, sortASC, internalPage, numeroElementi);
+        var tPush = _search.SearchPush(testo, titolo, argomento, sortByDate, sortASC, internalPage, numeroElementi);
+
+        pullResults = new();
+        pushResults = new();
+        pullFacets = new();
+        pushFacets = new();
+
+        await Task.WhenAll(new Task[] {tPull, tPush});
+
+        var resultsPull = tPull.Result;
+
+        var resultsPush = tPush.Result;
+
+        if (resultsPull is not null)
+        {
+            var i = resultsPull.Value;
+
+            pullFacets = GetFacets(i.Facets);
+
+            await foreach (var p in i.GetResultsAsync())
+            {
+                var currentDoc = new ResultDoc()
+                    {
+                        titolo = p.Document.titolo,
+                        argomento = p.Document.argomento,
+                        content = p.Document.content,
+                        data_creazione = p.Document.data_creazione,
+                        thumbnail_link = _blobStorage.GetThumbnailAccess(p.Document.guid)
+                    };
+
+                if (p.Highlights is not null)
+                {
+                    currentDoc.Hilights = p.Highlights.Where(h => h.Key == "content").First().Value.ToList();
+                }
+
+                pullResults.Add(currentDoc);
+            }
+        }
+
+        if (resultsPush is not null)
+        {
+            var i = resultsPush.Value;
+
+            pushFacets = GetFacets(i.Facets);
+
+            await foreach (var p in i.GetResultsAsync())
+            {
+                var currentDoc = new ResultDoc()
+                    {
+                        titolo = p.Document.titolo,
+                        argomento = p.Document.argomento,
+                        content = p.Document.content,
+                        data_creazione = p.Document.data_creazione,
+                        thumbnail_link = _blobStorage.GetThumbnailAccess(p.Document.guid)
+                    };
+
+                if (p.Highlights is not null)
+                {
+                    currentDoc.Hilights = p.Highlights.Where(h => h.Key == "content").First().Value.ToList();
+                }
+
+                pushResults.Add(currentDoc);
+            }
+        }
+    }
+
+    public async Task GetArgomento()
+    {
+        if (argomento.Length >= 3)
+        {
+            argomentoOptions = await _search.GetArgomentoSuggest(argomento);
+        }
+        else
+            argomentoOptions = new();
+    }
+
+    public class ResultDoc
+    {
+        public ResultDoc()
+        {
+
+        }
+
+        public string? db_id { get; set; }
+        public string? guid { get; set; }
+        public string argomento { get; set; }
+        public string titolo { get; set; }
+        public string content { get; set; }
+        public DateTimeOffset? data_creazione { get; set; }
+        public int? anno { get; set; }
+        public string thumbnail_link { get; set;  }
+        public List<string> Hilights { get; set; }
+    }
+
+    public class ResultFacets
+    {
+        public string MainKey;
+
+        public Dictionary<string, int> Facets;
+    }
+
+    public List<ResultFacets> GetFacets(IDictionary<string, IList<FacetResult>> facets)
+    {
+
+        var lista = new List<ResultFacets>();
+
+        foreach (var ifacet in facets)
+        {
+            var rfac = new ResultFacets();
+            rfac.MainKey = ifacet.Key;
+            rfac.Facets = new();
+
+            foreach (var item in ifacet.Value)
+            {
+                string key = item.Where(t => t.Key == "value").First().Value.ToString();
+                int count = Convert.ToInt32(item.Count);
+
+                rfac.Facets.Add(key, count);
+            }
+
+            lista.Add(rfac);
+        }
+
+        return lista;
+    }
+}
